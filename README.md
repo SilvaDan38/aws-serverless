@@ -7,6 +7,8 @@
 | `version` | 1.0.0 |
 | `runtime` | nodejs22.x |
 | `region` | us-east-1 |
+| `language` | JavaScript |
+| `iac` | Serverless Framework (YAML) |
 
 ## Pré-requisitos
 
@@ -33,16 +35,72 @@ npm install
 npx serverless deploy --stage dev
 ```
 
-## Instalação do Agent Datadog (Lambda)
+## Instalação do Datadog (Lambda)
 
-O agent Datadog em Lambda funciona via **Layers** (sem instalação de pacote):
+A instrumentação Datadog em Lambda é feita via **Lambda Layers** — não há pacote para instalar via npm.
 
-| Layer | Função |
-|-------|--------|
-| `Datadog-Extension:65` | Envia logs, métricas e traces via HTTP |
-| `Datadog-Node22-x:113` | Instrumentação APM automática (dd-trace) |
+### 1. Adicionar as Layers no `serverless.yml`
 
-O handler aponta para o wrapper da Datadog (`/opt/nodejs/node_modules/datadog-lambda-js/handler.handler`) e a variável `DD_LAMBDA_HANDLER` indica o handler real (`src/handler.hello`).
+```yaml
+functions:
+  hello:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    layers:
+      # Extension — coleta e envia logs, métricas e traces via HTTP
+      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Extension:65
+      # Tracer Node.js — instrumentação APM automática (dd-trace)
+      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Node22-x:113
+```
+
+### 2. Configurar variáveis de ambiente
+
+```yaml
+provider:
+  environment:
+    DD_ENV: dev
+    DD_SERVICE: aws-serverless-datadog
+    DD_VERSION: '1.0.0'
+    DD_TRACE_ENABLED: 'true'
+    DD_LAMBDA_HANDLER: src/handler.hello       # handler real da aplicação
+    DD_SERVERLESS_LOGS_ENABLED: 'true'         # logs via Extension (sem Forwarder)
+    DD_API_KEY: ${env:DD_API_KEY}              # chave da API Datadog
+```
+
+### 3. Redirecionar o handler
+
+O `handler` da função aponta para o wrapper do Datadog:
+
+```
+/opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+```
+
+O wrapper lê `DD_LAMBDA_HANDLER` para invocar o handler real (`src/handler.hello`).
+
+### 4. Instrumentação no código
+
+```javascript
+const tracer = require('dd-trace').init();         // APM — fornecido pela Layer
+const StatsD = require('hot-shots');               // métricas customizadas via DogStatsD
+
+const dogstatsd = new StatsD({ host: '127.0.0.1', port: 8125 });
+```
+
+- `dd-trace` vem da Layer (não precisa instalar via npm em produção, mas está no `package.json` para desenvolvimento local).
+- `hot-shots` envia métricas customizadas para a Extension na porta 8125.
+
+### 5. Deploy
+
+```bash
+export DD_API_KEY="sua-api-key"
+npx serverless deploy --stage dev
+```
+
+### Resumo das Layers
+
+| Layer | ARN | Função |
+|-------|-----|--------|
+| Extension | `arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Extension:65` | Coleta e envia logs, métricas e traces |
+| Tracer Node22 | `arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Node22-x:113` | Instrumentação APM automática |
 
 > 📄 Documentação detalhada: [docs/datadog-agent-setup.html](docs/datadog-agent-setup.html)
 

@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Instalação do Agent Datadog — AWS Serverless</title>
+  <title>Instrumentação Datadog — AWS Serverless (Lambda + Step Functions)</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.6; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.6; }
     h1 { color: #632ca6; border-bottom: 2px solid #632ca6; padding-bottom: 0.5rem; }
-    h2 { color: #333; margin-top: 2rem; }
+    h2 { color: #333; margin-top: 2.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+    h3 { color: #444; margin-top: 1.5rem; }
     code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
     pre { background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 6px; overflow-x: auto; }
     pre code { background: none; color: inherit; }
@@ -16,36 +17,46 @@
     th { background: #632ca6; color: #fff; }
     .tag { display: inline-block; background: #632ca6; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin: 2px; }
     .section { background: #f9f9f9; border-left: 4px solid #632ca6; padding: 1rem; margin: 1rem 0; }
+    .file-path { background: #e8e8e8; padding: 4px 8px; border-radius: 3px; font-family: monospace; font-size: 0.85em; }
   </style>
 </head>
 <body>
 
-<h1>Instalação do Agent Datadog em AWS Lambda (Serverless)</h1>
+<h1>Instrumentação Datadog — AWS Serverless (Lambda + Step Functions)</h1>
 
 <div class="section">
   <strong>Projeto:</strong> aws-serverless-datadog<br>
   <strong>Runtime:</strong> nodejs22.x<br>
   <strong>Região:</strong> us-east-1<br>
+  <strong>IaC:</strong> Serverless Framework v3<br>
   <strong>Tags:</strong>
   <span class="tag">env:dev</span>
   <span class="tag">service:aws-serverless-datadog</span>
   <span class="tag">version:1.0.0</span>
 </div>
 
+<!-- ============================== -->
+<!-- PARTE 1: SETUP GERAL           -->
+<!-- ============================== -->
+
 <h2>1. Pré-requisitos</h2>
 <ul>
   <li>Node.js 18+</li>
   <li>AWS CLI configurado com profile <code>danilo-profile</code></li>
   <li>Serverless Framework v3</li>
-  <li>Conta Datadog com API Key e APP Key</li>
+  <li>Conta Datadog com API Key</li>
+  <li>Plugin <code>serverless-step-functions</code> (para Step Functions)</li>
 </ul>
 
-<h2>2. Variáveis de Ambiente</h2>
-<pre><code>export DD_API_KEY="sua-api-key"
-export DD_APP_KEY="sua-app-key"</code></pre>
+<h2>2. Credenciais</h2>
+<pre><code># AWS
+aws configure --profile danilo-profile
 
-<h2>3. Layers da Datadog (Lambda)</h2>
-<p>O agent Datadog em Lambda funciona através de <strong>Layers</strong> — não há instalação de pacote. São duas layers:</p>
+# Datadog — exportar antes do deploy
+export DD_API_KEY="sua-api-key"</code></pre>
+
+<h2>3. Layers Datadog (Lambda)</h2>
+<p>A instrumentação Datadog em Lambda é feita via <strong>Lambda Layers</strong> — não há pacote npm para instalar em produção.</p>
 
 <table>
   <tr><th>Layer</th><th>ARN</th><th>Função</th></tr>
@@ -61,68 +72,448 @@ export DD_APP_KEY="sua-app-key"</code></pre>
   </tr>
 </table>
 
-<h2>4. Configuração no serverless.yml</h2>
-<pre><code>provider:
-  runtime: nodejs22.x
+<h2>4. Unified Service Tags</h2>
+<p>Tags obrigatórias para correlação entre logs, traces e métricas:</p>
+<table>
+  <tr><th>Tag</th><th>Variável</th><th>Valor</th></tr>
+  <tr><td><code>env</code></td><td>DD_ENV</td><td>dev</td></tr>
+  <tr><td><code>service</code></td><td>DD_SERVICE</td><td>aws-serverless-datadog</td></tr>
+  <tr><td><code>version</code></td><td>DD_VERSION</td><td>1.0.0</td></tr>
+</table>
+
+<!-- ============================== -->
+<!-- PARTE 2: LAMBDA STANDALONE     -->
+<!-- ============================== -->
+
+<h2>5. Instrumentação da Lambda (Hello)</h2>
+
+<h3>5.1 Configuração no serverless.yml</h3>
+<p>O handler aponta para o wrapper Datadog. A variável <code>DD_LAMBDA_HANDLER</code> indica o handler real:</p>
+<pre><code>custom:
+  datadogLayers:
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Extension:65
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Node22-x:113
+
+provider:
   environment:
-    # Unified Service Tagging
-    DD_ENV: dev
-    DD_SERVICE: aws-serverless-datadog
-    DD_VERSION: '1.0.0'
-    # APM
+    DD_ENV: ${self:custom.env}
+    DD_SERVICE: ${self:custom.service}
+    DD_VERSION: ${self:custom.version}
     DD_TRACE_ENABLED: 'true'
-    DD_LAMBDA_HANDLER: src/handler.hello
-    # Logs
     DD_SERVERLESS_LOGS_ENABLED: 'true'
     DD_API_KEY: ${env:DD_API_KEY}
 
 functions:
   hello:
     handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
-    layers:
-      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Extension:65
-      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Node22-x:113</code></pre>
+    environment:
+      DD_LAMBDA_HANDLER: src/handler.hello
+    layers: ${self:custom.datadogLayers}
+    events:
+      - http:
+          path: /hello
+          method: get</code></pre>
 
-<h2>5. Como Funciona o Wrapper</h2>
-<ol>
-  <li>O <code>handler</code> da função aponta para o wrapper da Datadog Layer: <code>/opt/nodejs/node_modules/datadog-lambda-js/handler.handler</code></li>
-  <li>A variável <code>DD_LAMBDA_HANDLER</code> indica o handler real da aplicação: <code>src/handler.hello</code></li>
-  <li>O wrapper inicializa o tracer, executa o handler real e coleta spans automaticamente</li>
-</ol>
+<h3>5.2 Código — src/handler.js</h3>
+<pre><code>const tracer = require('dd-trace').init();
+const StatsD = require('hot-shots');
 
-<h2>6. Deploy</h2>
-<pre><code>npm install
-npx serverless deploy --stage dev</code></pre>
+const dogstatsd = new StatsD({ host: '127.0.0.1', port: 8125 });
 
-<h2>7. Validação</h2>
-<pre><code># Testar endpoint
-curl https://x6fpcyfn4h.execute-api.us-east-1.amazonaws.com/dev/hello
+function log(level, message, extra = {}) {
+  const span = tracer.scope().active();
+  const traceId = span ? span.context().toTraceId() : '0';
+  const spanId = span ? span.context().toSpanId() : '0';
 
-# Validar API Key
-curl -s "https://api.datadoghq.com/api/v1/validate" \
-  -H "DD-API-KEY: ${DD_API_KEY}"
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    dd: { trace_id: traceId, span_id: spanId, env: process.env.DD_ENV, service: process.env.DD_SERVICE, version: process.env.DD_VERSION },
+    ...extra,
+  };
+  process.stdout.write(JSON.stringify(entry) + '\n');
+}
 
-# Verificar logs
-# Datadog → Logs → service:aws-serverless-datadog
+module.exports.hello = async (event) => {
+  log('info', 'Request received', { path: event.path });
 
-# Verificar traces
-# Datadog → APM → Traces → service:aws-serverless-datadog</code></pre>
+  // Métrica customizada via DogStatsD
+  dogstatsd.increment('business.request.count');
 
-<h2>8. Arquitetura de Observabilidade</h2>
-<pre><code>Lambda Handler
-  ├── dd-trace (APM — injeta trace_id/span_id nos logs)
-  ├── hot-shots → DogStatsD (porta 8125) → Extension → Datadog
-  └── stdout JSON → Extension (DD_SERVERLESS_LOGS_ENABLED) → Datadog
+  log('info', 'Processing complete');
 
-Sem Forwarder. A Extension envia tudo via HTTP.</code></pre>
+  return { statusCode: 200, body: JSON.stringify({ message: 'ok', traceEnabled: true }) };
+};</code></pre>
 
-<h2>9. Unified Service Tags</h2>
+<h3>5.3 O que cada componente faz</h3>
 <table>
-  <tr><th>Tag</th><th>Valor</th><th>Uso</th></tr>
-  <tr><td><code>env</code></td><td>dev</td><td>Ambiente de execução</td></tr>
+  <tr><th>Componente</th><th>Origem</th><th>Função</th></tr>
+  <tr><td><code>dd-trace</code></td><td>Layer Datadog-Node22-x</td><td>APM — gera spans, injeta trace_id/span_id</td></tr>
+  <tr><td><code>hot-shots</code></td><td>npm (package.json)</td><td>Envia métricas customizadas via DogStatsD (porta 8125)</td></tr>
+  <tr><td><code>log()</code></td><td>Código da aplicação</td><td>Logs estruturados JSON com correlação dd.trace_id</td></tr>
+  <tr><td>Extension</td><td>Layer Datadog-Extension</td><td>Coleta stdout + DogStatsD + traces e envia ao Datadog via HTTP</td></tr>
+</table>
+
+<h3>5.4 Fluxo de dados</h3>
+<pre><code>Lambda Handler (src/handler.hello)
+  │
+  ├── dd-trace.init() → gera span automático para a invocação
+  │     └── span.context() → trace_id + span_id (injetados nos logs)
+  │
+  ├── dogstatsd.increment('business.request.count')
+  │     └── UDP porta 8125 → Extension → Datadog Metrics
+  │
+  └── process.stdout.write(JSON log com dd.trace_id)
+        └── Extension (DD_SERVERLESS_LOGS_ENABLED) → Datadog Logs</code></pre>
+
+<h3>5.5 Teste</h3>
+<pre><code>curl https://x6fpcyfn4h.execute-api.us-east-1.amazonaws.com/dev/hello
+# Resposta: {"message":"ok","traceEnabled":true}</code></pre>
+
+<!-- ============================== -->
+<!-- PARTE 3: STEP FUNCTIONS        -->
+<!-- ============================== -->
+
+<h2>6. Instrumentação da Step Function (order-processing)</h2>
+
+<div class="section">
+  <strong>Como funciona:</strong> Step Functions é gerenciado — não é possível instalar o Agent diretamente. O Datadog coleta logs do CloudWatch (via Forwarder ou Firehose) e gera enhanced metrics + traces. Cada Lambda dos steps é instrumentada individualmente com dd-trace.
+</div>
+
+<h3>6.1 Requisitos</h3>
+<ul>
+  <li>Execução < 6 horas para traces completos</li>
+  <li><a href="https://docs.datadoghq.com/integrations/amazon_step_functions">AWS Step Functions Integration</a> instalada no Datadog</li>
+  <li><a href="https://docs.datadoghq.com/logs/guide/forwarder">Datadog Lambda Forwarder</a> v3.130.0+ (ou Amazon Data Firehose)</li>
+  <li>Plugin: <code>npm install --save-dev serverless-step-functions</code></li>
+</ul>
+
+<h3>6.2 Configuração no serverless.yml</h3>
+<pre><code>plugins:
+  - serverless-step-functions
+
+functions:
+  processOrder:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/processOrder.handler
+    layers: ${self:custom.datadogLayers}
+
+  sendNotification:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/sendNotification.handler
+    layers: ${self:custom.datadogLayers}
+
+stepFunctions:
+  stateMachines:
+    orderProcessing:
+      name: order-processing-${sls:stage}
+      tags:
+        DD_TRACE_ENABLED: 'true'
+        env: ${self:custom.env}
+        service: ${self:custom.service}
+        version: ${self:custom.version}
+      loggingConfig:
+        level: ALL
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [OrderProcessingLogGroup, Arn]
+      definition:
+        StartAt: ProcessOrder
+        States:
+          ProcessOrder:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [processOrder, Arn]
+            Next: SendNotification
+          SendNotification:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [sendNotification, Arn]
+            End: true
+
+resources:
+  Resources:
+    OrderProcessingLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/vendedlogs/states/order-processing-${sls:stage}-Logs
+        RetentionInDays: 14</code></pre>
+
+<h3>6.3 Tags obrigatórias na State Machine</h3>
+<table>
+  <tr><th>Tag</th><th>Valor</th><th>Descrição</th></tr>
+  <tr><td><code>DD_TRACE_ENABLED</code></td><td>true</td><td>Habilita geração de traces a partir dos logs</td></tr>
+  <tr><td><code>env</code></td><td>dev</td><td>Ambiente (obrigatório para ver traces no Datadog)</td></tr>
   <tr><td><code>service</code></td><td>aws-serverless-datadog</td><td>Nome do serviço</td></tr>
   <tr><td><code>version</code></td><td>1.0.0</td><td>Versão do deploy</td></tr>
 </table>
+
+<h3>6.4 Código — src/steps/processOrder.js</h3>
+<pre><code>const tracer = require('dd-trace').init();
+const StatsD = require('hot-shots');
+
+const dogstatsd = new StatsD({ host: '127.0.0.1', port: 8125 });
+
+function log(level, message, extra = {}) {
+  const span = tracer.scope().active();
+  const traceId = span ? span.context().toTraceId() : '0';
+  const spanId = span ? span.context().toSpanId() : '0';
+
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    dd: { trace_id: traceId, span_id: spanId, env: process.env.DD_ENV, service: process.env.DD_SERVICE, version: process.env.DD_VERSION },
+    ...extra,
+  };
+  process.stdout.write(JSON.stringify(entry) + '\n');
+}
+
+module.exports.handler = async (event) => {
+  log('info', 'processOrder started', { orderId: event.orderId });
+  dogstatsd.increment('step_function.process_order.invocations');
+
+  const result = { ...event, status: 'processed', processedAt: new Date().toISOString() };
+
+  log('info', 'processOrder completed', { orderId: event.orderId });
+  return result;
+};</code></pre>
+
+<h3>6.5 Código — src/steps/sendNotification.js</h3>
+<pre><code>const tracer = require('dd-trace').init();
+const StatsD = require('hot-shots');
+
+const dogstatsd = new StatsD({ host: '127.0.0.1', port: 8125 });
+
+function log(level, message, extra = {}) {
+  const span = tracer.scope().active();
+  const traceId = span ? span.context().toTraceId() : '0';
+  const spanId = span ? span.context().toSpanId() : '0';
+
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    dd: { trace_id: traceId, span_id: spanId, env: process.env.DD_ENV, service: process.env.DD_SERVICE, version: process.env.DD_VERSION },
+    ...extra,
+  };
+  process.stdout.write(JSON.stringify(entry) + '\n');
+}
+
+module.exports.handler = async (event) => {
+  log('info', 'sendNotification started', { orderId: event.orderId, status: event.status });
+  dogstatsd.increment('step_function.send_notification.invocations');
+
+  const result = { ...event, notified: true, notifiedAt: new Date().toISOString() };
+
+  log('info', 'sendNotification completed', { orderId: event.orderId });
+  return result;
+};</code></pre>
+
+<h3>6.6 Subscrever Forwarder ao Log Group</h3>
+<p>Para o Datadog gerar traces da Step Function, o Forwarder precisa estar subscrito ao log group:</p>
+<ul>
+  <li><strong>Automática:</strong> AWS Integration tile → Configuration → Log Collection → Autosubscribe → toggle "Step Functions CloudWatch Logs"</li>
+  <li><strong>Manual:</strong> Forwarder Lambda → Add trigger → CloudWatch Logs → <code>/aws/vendedlogs/states/order-processing-dev-Logs</code></li>
+  <li><strong>Amazon Data Firehose:</strong> Alternativa (requer log group com prefixo <code>/aws/vendedlogs/states/</code>)</li>
+</ul>
+
+<h3>6.7 Teste</h3>
+<pre><code>aws stepfunctions start-execution \
+  --state-machine-arn arn:aws:states:us-east-1:987615086900:stateMachine:order-processing-dev \
+  --input '{"orderId": "123"}' \
+  --profile danilo-profile \
+  --region us-east-1</code></pre>
+
+<!-- ============================== -->
+<!-- PARTE 4: VISÃO GERAL           -->
+<!-- ============================== -->
+
+<h2>7. serverless.yml completo</h2>
+<pre><code>service: aws-serverless-datadog
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-step-functions
+
+custom:
+  env: ${opt:stage, 'dev'}
+  service: aws-serverless-datadog
+  version: '1.0.0'
+  datadogLayers:
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Extension:65
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Node22-x:113
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  stage: ${self:custom.env}
+  region: us-east-1
+  profile: danilo-profile
+  environment:
+    DD_ENV: ${self:custom.env}
+    DD_SERVICE: ${self:custom.service}
+    DD_VERSION: ${self:custom.version}
+    DD_TRACE_ENABLED: 'true'
+    DD_MERGE_XRAY_TRACES: 'false'
+    DD_SERVERLESS_LOGS_ENABLED: 'true'
+    DD_API_KEY: ${env:DD_API_KEY}
+  tags:
+    env: ${self:custom.env}
+    service: ${self:custom.service}
+    version: ${self:custom.version}
+
+functions:
+  hello:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/handler.hello
+    layers: ${self:custom.datadogLayers}
+    events:
+      - http:
+          path: /hello
+          method: get
+
+  processOrder:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/processOrder.handler
+    layers: ${self:custom.datadogLayers}
+
+  sendNotification:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/sendNotification.handler
+    layers: ${self:custom.datadogLayers}
+
+stepFunctions:
+  stateMachines:
+    orderProcessing:
+      name: order-processing-${sls:stage}
+      tags:
+        DD_TRACE_ENABLED: 'true'
+        env: ${self:custom.env}
+        service: ${self:custom.service}
+        version: ${self:custom.version}
+      loggingConfig:
+        level: ALL
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [OrderProcessingLogGroup, Arn]
+      definition:
+        StartAt: ProcessOrder
+        States:
+          ProcessOrder:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [processOrder, Arn]
+            Next: SendNotification
+          SendNotification:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [sendNotification, Arn]
+            End: true
+
+resources:
+  Resources:
+    OrderProcessingLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/vendedlogs/states/order-processing-${sls:stage}-Logs
+        RetentionInDays: 14</code></pre>
+
+<h2>8. Deploy</h2>
+<pre><code>npm install
+export DD_API_KEY="sua-api-key"
+npx serverless deploy --stage dev</code></pre>
+
+<!-- ============================== -->
+<!-- PARTE 5: ARQUITETURA           -->
+<!-- ============================== -->
+
+<h2>9. Arquitetura de Observabilidade Completa</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                        API Gateway                               │
+│                     GET /dev/hello                                │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Lambda: hello (src/handler.hello)                               │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ dd-trace → span automático + trace_id/span_id              │ │
+│  │ hot-shots → dogstatsd.increment('business.request.count')  │ │
+│  │ log() → stdout JSON com dd.trace_id correlacionado         │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│  Extension coleta: traces + métricas DogStatsD + logs stdout     │
+│  Extension envia → Datadog (HTTP, sem Forwarder)                 │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Step Function: order-processing-dev                             │
+│  Tags: DD_TRACE_ENABLED=true, env=dev, service, version          │
+│                                                                   │
+│  ┌──────────────┐        ┌───────────────────┐                  │
+│  │ ProcessOrder │───────▶│ SendNotification  │                  │
+│  └──────┬───────┘        └────────┬──────────┘                  │
+│         │                         │                              │
+│         ▼                         ▼                              │
+│  Lambda: processOrder      Lambda: sendNotification              │
+│  ┌─────────────────┐      ┌─────────────────┐                  │
+│  │ dd-trace         │      │ dd-trace         │                  │
+│  │ hot-shots        │      │ hot-shots        │                  │
+│  │ log() com dd.*   │      │ log() com dd.*   │                  │
+│  └─────────────────┘      └─────────────────┘                  │
+│                                                                   │
+│  CloudWatch Logs (/aws/vendedlogs/states/order-processing-dev-Logs)
+│         │                                                        │
+│         └──▶ Datadog Forwarder (ou Firehose) → Datadog           │
+│               ├── Enhanced Metrics (duração, erros, throttles)   │
+│               └── Traces (execução como trace distribuído)        │
+└─────────────────────────────────────────────────────────────────┘</code></pre>
+
+<h2>10. Métricas Customizadas</h2>
+<table>
+  <tr><th>Métrica</th><th>Tipo</th><th>Origem</th></tr>
+  <tr><td><code>business.request.count</code></td><td>count</td><td>Lambda hello</td></tr>
+  <tr><td><code>step_function.process_order.invocations</code></td><td>count</td><td>Lambda processOrder</td></tr>
+  <tr><td><code>step_function.send_notification.invocations</code></td><td>count</td><td>Lambda sendNotification</td></tr>
+</table>
+
+<h2>11. Verificação no Datadog</h2>
+<table>
+  <tr><th>Onde</th><th>O que buscar</th></tr>
+  <tr><td>Logs</td><td><code>service:aws-serverless-datadog</code> — cada log com <code>dd.trace_id</code> e <code>dd.span_id</code></td></tr>
+  <tr><td>APM → Traces</td><td>Spans: <code>aws.lambda</code> para hello, spans por step na Step Function</td></tr>
+  <tr><td>Metrics → Explorer</td><td><code>business.request.count</code>, <code>step_function.*</code></td></tr>
+  <tr><td>Serverless App</td><td>Aba Step Functions — traces de execução completa</td></tr>
+  <tr><td>AWS Integration</td><td>Step Functions — métricas nativas CloudWatch</td></tr>
+</table>
+
+<h2>12. Estrutura do Projeto</h2>
+<pre><code>aws-serverless/
+├── serverless.yml              # Lambda + Step Function + Layers Datadog
+├── src/
+│   ├── handler.js              # Lambda standalone (GET /hello)
+│   └── steps/
+│       ├── processOrder.js     # Step 1 — processa pedido
+│       └── sendNotification.js # Step 2 — envia notificação
+├── docs/
+│   └── datadog-agent-setup.html  # Esta documentação
+├── package.json                # dd-trace, hot-shots, serverless-step-functions
+└── README.md</code></pre>
+
+<h2>13. Referências</h2>
+<ul>
+  <li><a href="https://docs.datadoghq.com/serverless/aws_lambda/instrumentation">Datadog Lambda Instrumentation</a></li>
+  <li><a href="https://docs.datadoghq.com/serverless/step_functions/installation/">Datadog Step Functions Installation</a></li>
+  <li><a href="https://docs.datadoghq.com/serverless/step_functions/merge-step-functions-lambda">Merge Step Functions and Lambda Traces</a></li>
+  <li><a href="https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging">Unified Service Tagging</a></li>
+</ul>
 
 </body>
 </html>

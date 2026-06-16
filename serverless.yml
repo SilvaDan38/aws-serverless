@@ -2,10 +2,16 @@ service: aws-serverless-datadog
 
 frameworkVersion: '3'
 
+plugins:
+  - serverless-step-functions
+
 custom:
   env: ${opt:stage, 'dev'}
   service: aws-serverless-datadog
   version: '1.0.0'
+  datadogLayers:
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Extension:65
+    - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Node22-x:113
 
 provider:
   name: aws
@@ -14,15 +20,11 @@ provider:
   region: us-east-1
   profile: danilo-profile
   environment:
-    # Unified Service Tagging
     DD_ENV: ${self:custom.env}
     DD_SERVICE: ${self:custom.service}
     DD_VERSION: ${self:custom.version}
-    # Datadog APM
     DD_TRACE_ENABLED: 'true'
     DD_MERGE_XRAY_TRACES: 'false'
-    DD_LAMBDA_HANDLER: src/handler.hello
-    # Logs via Extension (sem Forwarder)
     DD_SERVERLESS_LOGS_ENABLED: 'true'
     DD_API_KEY: ${env:DD_API_KEY}
   tags:
@@ -33,12 +35,58 @@ provider:
 functions:
   hello:
     handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
-    layers:
-      # Datadog Lambda Extension
-      - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Extension:65
-      # Datadog Tracer (Node.js)
-      - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Node22-x:113
+    environment:
+      DD_LAMBDA_HANDLER: src/handler.hello
+    layers: ${self:custom.datadogLayers}
     events:
       - http:
           path: /hello
           method: get
+
+  processOrder:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/processOrder.handler
+    layers: ${self:custom.datadogLayers}
+
+  sendNotification:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    environment:
+      DD_LAMBDA_HANDLER: src/steps/sendNotification.handler
+    layers: ${self:custom.datadogLayers}
+
+stepFunctions:
+  stateMachines:
+    orderProcessing:
+      name: order-processing-${sls:stage}
+      tags:
+        DD_TRACE_ENABLED: 'true'
+        env: ${self:custom.env}
+        service: ${self:custom.service}
+        version: ${self:custom.version}
+      loggingConfig:
+        level: ALL
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [OrderProcessingLogGroup, Arn]
+      definition:
+        StartAt: ProcessOrder
+        States:
+          ProcessOrder:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [processOrder, Arn]
+            Next: SendNotification
+          SendNotification:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [sendNotification, Arn]
+            End: true
+
+resources:
+  Resources:
+    OrderProcessingLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/vendedlogs/states/order-processing-${sls:stage}-Logs
+        RetentionInDays: 14

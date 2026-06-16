@@ -1,0 +1,44 @@
+service: aws-serverless-datadog
+
+frameworkVersion: '3'
+
+custom:
+  env: ${opt:stage, 'dev'}
+  service: aws-serverless-datadog
+  version: '1.0.0'
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  stage: ${self:custom.env}
+  region: us-east-1
+  profile: danilo-profile
+  environment:
+    # Unified Service Tagging
+    DD_ENV: ${self:custom.env}
+    DD_SERVICE: ${self:custom.service}
+    DD_VERSION: ${self:custom.version}
+    # Datadog APM
+    DD_TRACE_ENABLED: 'true'
+    DD_MERGE_XRAY_TRACES: 'false'
+    DD_LAMBDA_HANDLER: src/handler.hello
+    # Logs via Extension (sem Forwarder)
+    DD_SERVERLESS_LOGS_ENABLED: 'true'
+    DD_API_KEY: ${env:DD_API_KEY}
+  tags:
+    env: ${self:custom.env}
+    service: ${self:custom.service}
+    version: ${self:custom.version}
+
+functions:
+  hello:
+    handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+    layers:
+      # Datadog Lambda Extension
+      - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Extension:65
+      # Datadog Tracer (Node.js)
+      - arn:aws:lambda:${self:provider.region}:464622532012:layer:Datadog-Node22-x:113
+    events:
+      - http:
+          path: /hello
+          method: get

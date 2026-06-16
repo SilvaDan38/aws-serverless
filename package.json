@@ -1,0 +1,12 @@
+{
+  "name": "aws-serverless-datadog",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "dd-trace": "5.26.0",
+    "hot-shots": "10.2.1"
+  },
+  "devDependencies": {
+    "serverless": "3.39.0"
+  }
+}
